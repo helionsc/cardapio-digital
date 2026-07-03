@@ -979,13 +979,24 @@ function renderKanban() {
   const pedidos = pedidosCache;
 
   wrap.innerHTML = COLUNAS.map(col => {
-    const cards = pedidos.filter(p => col.statuses.includes(p.status));
+    let cards = pedidos.filter(p => col.statuses.includes(p.status));
+    const total = cards.length;
+    let maisLink = '';
+    // a coluna "Concluído" pode crescer indefinidamente; mostra só os mais
+    // recentes aqui e manda o resto para a aba "Histórico do mês"
+    if (col.id === 'concluido' && total > 12) {
+      cards = cards.slice(0, 12);
+      maisLink = `
+        <button class="btn btn-glass btn-sm btn-block" style="margin-top:2px;" onclick="mudarSubTelaPedidos('historico')">
+          Ver histórico completo (${total})
+        </button>`;
+    }
     return `
       <div class="kanban-col ${col.cls}">
         <div class="kanban-header">
           <span class="col-dot"></span>
           <span class="col-title">${col.title}</span>
-          ${cards.length ? `<span class="col-count">${cards.length}</span>` : ''}
+          ${total ? `<span class="col-count">${total}</span>` : ''}
         </div>
         <div class="kanban-body">
           ${cards.length
@@ -995,6 +1006,7 @@ function renderKanban() {
                 <p style="margin:0;">Nenhum pedido</p>
                </div>`
           }
+          ${maisLink}
         </div>
       </div>
     `;
@@ -1003,19 +1015,127 @@ function renderKanban() {
   atualizarBadgePedidos();
 }
 
+let pedidosSubTela = 'ativos'; // 'ativos' | 'historico'
+
 function telaPedidos() {
   return `
-    <div style="margin: -4px 0 10px; display:flex; align-items:center; justify-content:space-between;">
-      <p style="margin:0;font-size:13px;color:var(--ink-soft);">Atualizando em tempo real</p>
-      <button class="btn btn-glass btn-sm" onclick="refreshPedidos().then(renderKanban)">${Icon.check({size: 14})} Atualizar</button>
-    </div>
-    <div class="kanban-wrap" id="kanbanWrap"></div>
+    <div class="cat-chip-row" id="pedidosTabs" style="margin-bottom:2px;"></div>
+    <div id="pedidosConteudo"></div>
   `;
 }
 
 posRenderHooks.pedidos = function() {
-  renderKanban();
+  renderPedidosTabs();
+  renderPedidosConteudo();
 };
+
+function renderPedidosTabs() {
+  document.getElementById('pedidosTabs').innerHTML = `
+    <button class="cat-chip ${pedidosSubTela === 'ativos' ? 'active' : ''}" onclick="mudarSubTelaPedidos('ativos')">Ativos</button>
+    <button class="cat-chip ${pedidosSubTela === 'historico' ? 'active' : ''}" onclick="mudarSubTelaPedidos('historico')">Histórico do mês</button>
+  `;
+}
+
+function mudarSubTelaPedidos(tela) {
+  pedidosSubTela = tela;
+  renderPedidosTabs();
+  renderPedidosConteudo();
+}
+
+function renderPedidosConteudo() {
+  const wrap = document.getElementById('pedidosConteudo');
+  if (pedidosSubTela === 'ativos') {
+    wrap.innerHTML = `
+      <div style="margin: 10px 0 10px; display:flex; align-items:center; justify-content:space-between;">
+        <p style="margin:0;font-size:13px;color:var(--ink-soft);">Atualizando em tempo real</p>
+        <button class="btn btn-glass btn-sm" onclick="refreshPedidos().then(renderKanban)">${Icon.check({size: 14})} Atualizar</button>
+      </div>
+      <div class="kanban-wrap" id="kanbanWrap"></div>
+    `;
+    renderKanban();
+  } else {
+    wrap.innerHTML = telaPedidosHistorico();
+  }
+}
+
+/* ---------- Histórico do mês ---------- */
+
+const STATUS_META = {
+  recebido:  { label: 'Recebido',            bg: 'rgba(255,159,10,0.14)', fg: '#B25000' },
+  preparo:   { label: 'Em preparo',           bg: 'rgba(10,132,255,0.12)', fg: '#0060C0' },
+  caminho:   { label: 'Saiu p/ entrega',      bg: 'rgba(175,82,222,0.12)', fg: '#7B25C0' },
+  pronto:    { label: 'Pronto p/ retirada',   bg: 'rgba(175,82,222,0.12)', fg: '#7B25C0' },
+  concluido: { label: 'Concluído',            bg: 'rgba(52,199,89,0.12)',  fg: '#1A7E35' },
+};
+
+function statusBadgeHtml(status) {
+  const m = STATUS_META[status] || STATUS_META.recebido;
+  return `<span class="badge" style="background:${m.bg};color:${m.fg};">${m.label}</span>`;
+}
+
+function telaPedidosHistorico() {
+  const pedidosMes = filtrarPedidosDoMes(pedidosCache);
+
+  if (!pedidosMes.length) {
+    return `
+      <div class="empty-state">
+        <div class="emoji">${Icon.receipt({size: 44})}</div>
+        <h3>Nenhum pedido este mês</h3>
+        <p>Os pedidos de ${nomeMesAtual()} aparecerão aqui.</p>
+      </div>`;
+  }
+
+  const totalPedidos = pedidosMes.length;
+  const concluidos = pedidosMes.filter(p => p.status === 'concluido');
+  const faturamento = concluidos.reduce((s, p) => s + p.total, 0);
+  const ticketMedio = totalPedidos ? (pedidosMes.reduce((s, p) => s + p.total, 0) / totalPedidos) : 0;
+
+  // agrupar por dia (mantendo a ordem, já que pedidosMes vem ordenado do mais novo pro mais antigo)
+  const grupos = [];
+  pedidosMes.forEach(p => {
+    const diaKey = new Date(p.criadoEm).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' });
+    let grupo = grupos.find(g => g.dia === diaKey);
+    if (!grupo) { grupo = { dia: diaKey, itens: [] }; grupos.push(grupo); }
+    grupo.itens.push(p);
+  });
+
+  return `
+    <div style="margin:10px 0 4px;">
+      <p style="margin:0;font-size:13px;color:var(--ink-soft);">${nomeMesAtual()}</p>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card fade-up"><div class="num">${totalPedidos}</div><div class="lbl">Pedidos no mês</div></div>
+      <div class="stat-card fade-up"><div class="num">${formatMoeda(faturamento)}</div><div class="lbl">Faturamento (concluídos)</div></div>
+      <div class="stat-card fade-up"><div class="num">${formatMoeda(ticketMedio)}</div><div class="lbl">Ticket médio</div></div>
+      <div class="stat-card fade-up"><div class="num">${concluidos.length}</div><div class="lbl">Pedidos concluídos</div></div>
+    </div>
+    ${grupos.map(g => `
+      <div class="section-title">${g.dia}</div>
+      <div class="flex-col gap-12" style="margin-bottom:8px;">
+        ${g.itens.map(p => historicoCardHtml(p)).join('')}
+      </div>
+    `).join('')}
+  `;
+}
+
+function historicoCardHtml(p) {
+  const horario = new Date(p.criadoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const itensStr = p.itens.map(i => `${i.qtd}× ${i.nome}`).join(', ');
+  return `
+    <div class="order-card">
+      <div class="order-card-top">
+        <div class="order-card-head">
+          <span class="order-card-num">${p.numero}</span>
+          <span class="order-card-time">${horario}</span>
+        </div>
+        ${statusBadgeHtml(p.status)}
+        <div class="order-card-items" style="margin-top:6px;">${itensStr}</div>
+        ${p.cliente?.nome ? `<div class="order-card-endereco">${Icon.user({size: 11})} ${p.cliente.nome}${p.cliente.celular ? ` · ${p.cliente.celular}` : ''}</div>` : ''}
+        <div style="margin-top:6px;"><span class="order-card-valor">${formatMoeda(p.total)}</span></div>
+      </div>
+    </div>
+  `;
+}
 
 async function atualizarStatusPedido(pedidoId, novoStatus) {
   try {

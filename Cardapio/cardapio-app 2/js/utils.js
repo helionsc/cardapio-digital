@@ -106,3 +106,18 @@ function numeroPedido() {
   const n = Math.floor(1000 + Math.random() * 9000);
   return `#${n}`;
 }
+
+function estaNoMesAtual(timestamp) {
+  const d = new Date(timestamp);
+  const now = new Date();
+  return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+}
+
+function nomeMesAtual() {
+  const s = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function filtrarPedidosDoMes(pedidos) {
+  return pedidos.filter(p => estaNoMesAtual(p.criadoEm)).sort((a, b) => b.criadoEm - a.criadoEm);
+}
